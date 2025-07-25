@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PdfTickleSharp.Core", "PdfTickleSharp.Core\PdfTickleSharp.Core.csproj", "{70879E34-5EBA-4999-BAF7-C7FEBFA89617}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PdfTickleSharp.Advanced", "PdfTickleSharp.Advanced\PdfTickleSharp.Advanced.csproj", "{5D611B17-DCD9-4322-A492-82407C696970}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{70879E34-5EBA-4999-BAF7-C7FEBFA89617}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{70879E34-5EBA-4999-BAF7-C7FEBFA89617}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{70879E34-5EBA-4999-BAF7-C7FEBFA89617}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{70879E34-5EBA-4999-BAF7-C7FEBFA89617}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5D611B17-DCD9-4322-A492-82407C696970}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5D611B17-DCD9-4322-A492-82407C696970}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5D611B17-DCD9-4322-A492-82407C696970}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5D611B17-DCD9-4322-A492-82407C696970}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
