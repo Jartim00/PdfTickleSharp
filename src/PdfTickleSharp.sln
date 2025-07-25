@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PdfTickleSharp.Core", "PdfT
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PdfTickleSharp.Advanced", "PdfTickleSharp.Advanced\PdfTickleSharp.Advanced.csproj", "{5D611B17-DCD9-4322-A492-82407C696970}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PdfTickleSharp.TestApp", "PdfTickleSharp.TestApp\PdfTickleSharp.TestApp.csproj", "{01601A25-CB2B-4F57-A87D-1DDCB2B9FC1E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -24,5 +26,9 @@ Global
 		{5D611B17-DCD9-4322-A492-82407C696970}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5D611B17-DCD9-4322-A492-82407C696970}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5D611B17-DCD9-4322-A492-82407C696970}.Release|Any CPU.Build.0 = Release|Any CPU
+		{01601A25-CB2B-4F57-A87D-1DDCB2B9FC1E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{01601A25-CB2B-4F57-A87D-1DDCB2B9FC1E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{01601A25-CB2B-4F57-A87D-1DDCB2B9FC1E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{01601A25-CB2B-4F57-A87D-1DDCB2B9FC1E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

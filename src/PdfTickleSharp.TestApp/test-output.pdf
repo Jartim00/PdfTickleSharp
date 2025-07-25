@@ -1,0 +1,150 @@
+%PDF-1.4
+%????
+1 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+endobj
+
+2 0 obj
+<<
+/Type /Pages
+/Kids [4 0 R 6 0 R 8 0 R]
+/Count 3
+>>
+endobj
+
+3 0 obj
+<<
+/Length 469
+>>
+stream
+BT
+/F1 12 Tf
+100.00 750.00 Td
+(Welcome to PdfTickleSharp!) Tj
+-100 -750 Td
+100.00 720.00 Td
+(This is the Phase 1 completion test.) Tj
+-100 -720 Td
+120.00 680.00 Td
+(? Project structure setup) Tj
+-120 -680 Td
+120.00 660.00 Td
+(? Basic solution architecture) Tj
+-120 -660 Td
+120.00 640.00 Td
+(? Core PDF document model) Tj
+-120 -640 Td
+120.00 620.00 Td
+(? Basic text rendering API) Tj
+-120 -620 Td
+120.00 600.00 Td
+(? Simple PDF creation \(file I/O\)) Tj
+-120 -600 Td
+ET
+endstream
+endobj
+
+4 0 obj
+<<
+/Type /Page
+/Parent 2 0 R
+/MediaBox [0 0 595.28 841.89]
+/Contents 3 0 R
+/Resources <<
+  /Font <<
+    /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+  >>
+>>
+>>
+endobj
+
+5 0 obj
+<<
+/Length 219
+>>
+stream
+BT
+/F1 12 Tf
+100.00 720.00 Td
+(Second Page - Letter Size) Tj
+-100 -720 Td
+100.00 690.00 Td
+(Different page sizes are supported!) Tj
+-100 -690 Td
+100.00 660.00 Td
+(Page size: Letter \(612 ? 792 pts\)) Tj
+-100 -660 Td
+ET
+endstream
+endobj
+
+6 0 obj
+<<
+/Type /Page
+/Parent 2 0 R
+/MediaBox [0 0 612.00 792.00]
+/Contents 5 0 R
+/Resources <<
+  /Font <<
+    /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+  >>
+>>
+>>
+endobj
+
+7 0 obj
+<<
+/Length 202
+>>
+stream
+BT
+/F1 12 Tf
+50.00 550.00 Td
+(Custom Page Size) Tj
+-50 -550 Td
+50.00 520.00 Td
+(Size: Custom \(400 ? 600 pts\)) Tj
+-50 -520 Td
+50.00 490.00 Td
+(This demonstrates flexible page sizing) Tj
+-50 -490 Td
+ET
+endstream
+endobj
+
+8 0 obj
+<<
+/Type /Page
+/Parent 2 0 R
+/MediaBox [0 0 400.00 600.00]
+/Contents 7 0 R
+/Resources <<
+  /Font <<
+    /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+  >>
+>>
+>>
+endobj
+
+xref
+0 9
+0000000000 65535 f 
+0000000015 00000 n 
+0000000065 00000 n 
+0000000135 00000 n 
+0000000655 00000 n 
+0000000845 00000 n 
+0000001115 00000 n 
+0000001305 00000 n 
+0000001558 00000 n 
+trailer
+<<
+/Size 9
+/Root 1 0 R
+>>
+startxref
+1748
+%%EOF

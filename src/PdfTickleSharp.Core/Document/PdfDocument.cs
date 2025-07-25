@@ -1,3 +1,7 @@
+
+
+using PdfTickleSharp.Core.IO;
+
 namespace PdfTickleSharp.Core.Document;
 
 /// <summary>
@@ -78,9 +82,39 @@ public class PdfDocument : IDisposable
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(filePath);
 
-        // TODO: Implement actual PDF generation
         Metadata.UpdateModificationDate();
-        throw new NotImplementedException("PDF generation is not yet implemented.");
+        
+        var writer = new PdfWriter();
+        writer.WriteToFile(this, filePath);
+    }
+
+    /// <summary>
+    /// Saves the document to a stream.
+    /// </summary>
+    /// <param name="stream">The stream to write the PDF to.</param>
+    public void Save(Stream stream)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(stream);
+
+        Metadata.UpdateModificationDate();
+        
+        var writer = new PdfWriter();
+        writer.WriteToStream(this, stream);
+    }
+
+    /// <summary>
+    /// Returns the document as a byte array.
+    /// </summary>
+    /// <returns>The PDF document as a byte array.</returns>
+    public byte[] ToByteArray()
+    {
+        ThrowIfDisposed();
+        
+        Metadata.UpdateModificationDate();
+        
+        var writer = new PdfWriter();
+        return writer.GeneratePdf(this);
     }
 
     private void ThrowIfDisposed()
