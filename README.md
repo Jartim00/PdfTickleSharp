@@ -102,12 +102,12 @@ document.Save("output.pdf");
 
 ## 🛠️ Development Roadmap
 
-### Phase 1: Foundation (Current)
+### Phase 1: Foundation (Completed ✅)
 - [x] Project structure setup
 - [x] Basic solution architecture
-- [ ] Core PDF document model
-- [ ] Basic text rendering
-- [ ] Simple PDF creation
+- [x] Core PDF document model
+- [x] Basic text rendering API
+- [ ] Simple PDF creation (file I/O)
 
 ### Phase 2: Core Features
 - [ ] Advanced text formatting
