@@ -8,7 +8,7 @@ namespace PdfTickleSharp.TestApp;
 /// </summary>
 public static class Phase1Tests
 {
-    public static async Task<int> RunAsync(string[] args)
+    public static Task<int> RunAsync(string[] args)
     {
         Console.WriteLine("=== PdfTickleSharp Phase 1 Complete Test ===");
         Console.WriteLine($"Library Version: {PdfTickleSharp.Core.PdfTickleSharp.Version}");
@@ -76,7 +76,7 @@ public static class Phase1Tests
             // 5. Test Simple PDF Creation (file I/O) - THE NEW FUNCTIONALITY!
             Console.WriteLine("💾 5. Testing Simple PDF Creation (file I/O)...");
             
-            var outputPath = Path.Combine(Environment.CurrentDirectory, "test-output.pdf");
+            var outputPath = Path.Combine(Environment.CurrentDirectory, "phase1.pdf");
             Console.WriteLine($"   📁 Saving PDF to: {outputPath}");
             
             document.Save(outputPath);
@@ -134,13 +134,13 @@ public static class Phase1Tests
             Console.WriteLine("🔍 Open it in any PDF viewer to see the results!");
             Console.WriteLine("🎯 The basic infrastructure works - now let's make it beautiful!");
 
-            return 0;
+            return Task.FromResult(0);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"❌ PHASE 1 TEST FAILED: {ex.Message}");
             Console.WriteLine($"Stack trace: {ex}");
-            return 1;
+            return Task.FromResult(1);
         }
     }
 } 

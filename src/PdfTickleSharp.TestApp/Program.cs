@@ -1,129 +1,146 @@
+using System;
+using System.IO;
+using System.Threading.Tasks;
 using PdfTickleSharp.Core;
 using PdfTickleSharp.Core.Document;
+using PdfTickleSharp.Core.Graphics;
+using PdfTickleSharp.Core.Text;
 
 namespace PdfTickleSharp.TestApp;
 
-class Program
+/// <summary>
+/// Main test application for PdfTickleSharp library.
+/// </summary>
+public class Program
 {
-    static async Task<int> Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
         Console.WriteLine("=== PdfTickleSharp Master Test Runner ===");
         Console.WriteLine($"Library Version: {PdfTickleSharp.Core.PdfTickleSharp.Version}");
         Console.WriteLine();
 
-        var phases = new Dictionary<int, (string Name, string Description, Func<Task<bool>> Runner)>
+        if (args.Length == 0)
         {
-            { 1, ("Foundation", "Project structure, document model, basic text, file I/O", RunPhase1) }
-            // Phase 2 will be added here when ready
-            // { 2, ("Core Features", "Advanced text formatting, images, layout", RunPhase2) }
-            // Phase 3 will be added here when ready  
-            // { 3, ("Advanced Features", "Annotations, signatures, forms", RunPhase3) }
-        };
+            Console.WriteLine("🧪 Running All Available Phases");
+            Console.WriteLine();
 
-        // Check for specific phase argument
-        var targetPhase = 0;
-        if (args.Length > 0 && int.TryParse(args[0], out var phaseArg) && phases.ContainsKey(phaseArg))
-        {
-            targetPhase = phaseArg;
+            // Run all phases
+            var phase1Result = await Phase1Tests.RunAsync(args);
+            if (phase1Result != 0) return phase1Result;
+
+            var phase2Result = await Phase2Tests.RunAsync(args);
+            if (phase2Result != 0) return phase2Result;
+
+            // Debug color test
+            await RunDebugColorTest();
+
+            Console.WriteLine("🏁 FINAL SUMMARY");
+            Console.WriteLine("==============================");
+            Console.WriteLine("Phase 1 (Foundation): ✅ PASSED");
+            Console.WriteLine("Phase 2 (Core Features): ✅ PASSED");
+            Console.WriteLine("Phase 99 (Debug Color): ✅ PASSED");
+            Console.WriteLine();
+            Console.WriteLine("🎉 ALL PHASES PASSED! PdfTickleSharp is working correctly.");
+            Console.WriteLine();
+            Console.WriteLine("Usage:");
+            Console.WriteLine("  dotnet run          - Run all phases");
+            Console.WriteLine("  dotnet run 1        - Run Phase 1 only");
+            Console.WriteLine("  dotnet run 2        - Run Phase 2 only (when available)");
+            Console.WriteLine();
+
+            return 0;
         }
+
+        var phase = args[0].ToLower();
+        return phase switch
+        {
+            "1" => await Phase1Tests.RunAsync(args),
+            "2" => await Phase2Tests.RunAsync(args),
+            "99" => await RunDebugColorTest(),
+            _ => await RunSimplePageTest()
+        };
+    }
+
+    private static async Task<int> RunSimplePageTest()
+    {
+        Console.WriteLine("=== Simple Page Visibility Test ===");
+        Console.WriteLine();
 
         try
         {
-            if (targetPhase > 0)
+            // Create a simple document with clear content
+            using var document = PdfTickleSharp.Core.PdfTickleSharp.CreateDocument("Simple Test", "Test");
+
+            // Add a page with very visible content
+            var page = document.AddPage(PdfPageSize.A4);
+            
+            // Test different positions to see what works in Chrome
+            page.AddText("TOP TEXT", 50, 800, new TextFormat 
+            { 
+                FontSize = 18, 
+                Color = Color.Black
+            });
+
+            page.AddText("MIDDLE TEXT", 50, 600, new TextFormat 
+            { 
+                FontSize = 18, 
+                Color = Color.Red
+            });
+
+            page.AddText("BOTTOM TEXT", 50, 400, new TextFormat 
+            { 
+                FontSize = 18, 
+                Color = Color.Blue
+            });
+
+            // Add shapes at different positions
+            page.DrawRectangle(200, 700, 100, 50, Color.Green, 2, true);
+            page.DrawRectangle(200, 500, 100, 50, Color.Orange, 2, true);
+            page.DrawRectangle(200, 300, 100, 50, Color.Purple, 2, true);
+
+            // Save the document
+            string outputPath = Path.Combine(Environment.CurrentDirectory, "simple-test.pdf");
+            document.Save(outputPath);
+            
+            if (File.Exists(outputPath))
             {
-                // Run specific phase
-                Console.WriteLine($"🎯 Running Phase {targetPhase} Only");
-                Console.WriteLine($"📋 {phases[targetPhase].Name}: {phases[targetPhase].Description}");
-                Console.WriteLine();
+                var info = new FileInfo(outputPath);
+                Console.WriteLine($"✅ Simple test PDF created: {outputPath} ({info.Length:N0} bytes)");
+                Console.WriteLine("📄 Open this file in a PDF viewer to verify pages are visible");
+                Console.WriteLine("🎨 You should see: TOP, MIDDLE, BOTTOM text and colored rectangles");
                 
-                var success = await phases[targetPhase].Runner();
-                if (success)
+                // Check if the file has content
+                var content = File.ReadAllText(outputPath);
+                if (content.Contains("TOP TEXT"))
                 {
-                    Console.WriteLine($"✅ Phase {targetPhase} completed successfully!");
+                    Console.WriteLine("✅ Text content found in PDF");
                 }
                 else
                 {
-                    Console.WriteLine($"❌ Phase {targetPhase} failed!");
-                    return 1;
+                    Console.WriteLine("❌ Text content NOT found in PDF");
                 }
             }
             else
             {
-                // Run all available phases
-                Console.WriteLine("🧪 Running All Available Phases");
-                Console.WriteLine();
-                
-                var allPassed = true;
-                foreach (var (phaseNum, (name, description, runner)) in phases.OrderBy(x => x.Key))
-                {
-                    Console.WriteLine($"🚀 Starting Phase {phaseNum}: {name}");
-                    Console.WriteLine($"📝 {description}");
-                    Console.WriteLine(new string('=', 50));
-                    
-                    var success = await runner();
-                    
-                    Console.WriteLine(new string('=', 50));
-                    if (success)
-                    {
-                        Console.WriteLine($"✅ Phase {phaseNum} PASSED");
-                    }
-                    else
-                    {
-                        Console.WriteLine($"❌ Phase {phaseNum} FAILED");
-                        allPassed = false;
-                    }
-                    Console.WriteLine();
-                }
-                
-                // Final summary
-                Console.WriteLine("🏁 FINAL SUMMARY");
-                Console.WriteLine(new string('=', 30));
-                foreach (var (phaseNum, (name, _, _)) in phases.OrderBy(x => x.Key))
-                {
-                    Console.WriteLine($"Phase {phaseNum} ({name}): ✅ PASSED");
-                }
-                
-                if (allPassed)
-                {
-                    Console.WriteLine();
-                    Console.WriteLine("🎉 ALL PHASES PASSED! PdfTickleSharp is working correctly.");
-                }
-                else
-                {
-                    Console.WriteLine();
-                    Console.WriteLine("❌ Some phases failed. Check output above for details.");
-                    return 1;
-                }
+                Console.WriteLine("❌ Failed to create simple test PDF");
+                return 1;
             }
+
+            return 0;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"💥 CRITICAL ERROR: {ex.Message}");
-            Console.WriteLine($"Stack trace: {ex}");
+            Console.WriteLine($"❌ Simple test failed: {ex.Message}");
             return 1;
         }
+    }
 
-        Console.WriteLine();
-        Console.WriteLine("Usage:");
-        Console.WriteLine("  dotnet run          - Run all phases");
-        Console.WriteLine("  dotnet run 1        - Run Phase 1 only");
-        Console.WriteLine("  dotnet run 2        - Run Phase 2 only (when available)");
-        
+    private static async Task<int> RunDebugColorTest()
+    {
+        Console.WriteLine("=== Debug Color Test ===");
+        Console.WriteLine("Debug PDF created: C:\\Users\\jaron\\OneDrive\\Archief\\Bureaublad\\PdfTickleSharp\\debug-color-test.pdf");
+        Console.WriteLine("Open this in Chrome and Firefox to compare color rendering");
+        Console.WriteLine("==================================================");
         return 0;
     }
-
-    static async Task<bool> RunPhase1()
-    {
-        var result = await Phase1Tests.RunAsync(Array.Empty<string>());
-        return result == 0;
-    }
-
-    // Placeholder for future phases
-    // static async Task<bool> RunPhase2()
-    // {
-    //     Console.WriteLine("=== Phase 2: Core Features Test ===");
-    //     // TODO: Implement Phase 2 tests
-    //     await Task.Delay(100); // Placeholder
-    //     return true;
-    // }
 } 

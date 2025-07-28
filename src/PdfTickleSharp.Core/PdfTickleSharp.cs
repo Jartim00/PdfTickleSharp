@@ -10,7 +10,7 @@ public static class PdfTickleSharp
     /// <summary>
     /// Gets the version of the PdfTickleSharp library.
     /// </summary>
-    public static string Version => "1.0.0-alpha";
+    public static string Version => "2.0.0-alpha";
 
     /// <summary>
     /// Creates a new PDF document with default settings.
