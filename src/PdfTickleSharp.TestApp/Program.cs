@@ -31,6 +31,11 @@ public class Program
             var phase2Result = await Phase2Tests.RunAsync(args);
             if (phase2Result != 0) return phase2Result;
 
+            // Run PDF compatibility test
+            Console.WriteLine();
+            PdfCompatibilityTest.ValidatePdfForUniversalCompatibility("phase2.pdf");
+            Console.WriteLine();
+
             // Debug color test
             await RunDebugColorTest();
 
@@ -55,8 +60,9 @@ public class Program
         return phase switch
         {
             "1" => await Phase1Tests.RunAsync(args),
-            "2" => await Phase2Tests.RunAsync(args),
+            "2" => await RunPhase2WithCompatibilityTest(args),
             "99" => await RunDebugColorTest(),
+            "test" => await RunCompatibilityTestOnly(),
             _ => await RunSimplePageTest()
         };
     }
@@ -143,4 +149,29 @@ public class Program
         Console.WriteLine("==================================================");
         return 0;
     }
-} 
+
+    private static async Task<int> RunPhase2WithCompatibilityTest(string[] args)
+    {
+        var result = await Phase2Tests.RunAsync(args);
+        if (result == 0)
+        {
+            Console.WriteLine();
+            PdfCompatibilityTest.ValidatePdfForUniversalCompatibility("phase2.pdf");
+        }
+        return result;
+    }
+
+    private static async Task<int> RunCompatibilityTestOnly()
+    {
+        if (File.Exists("phase2.pdf"))
+        {
+            PdfCompatibilityTest.ValidatePdfForUniversalCompatibility("phase2.pdf");
+            return 0;
+        }
+        else
+        {
+            Console.WriteLine("❌ phase2.pdf not found. Run 'dotnet run 2' first to generate it.");
+            return 1;
+        }
+    }
+}

@@ -1,9 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
-using PdfTickleSharp.Core;
 using PdfTickleSharp.Core.Document;
 using PdfTickleSharp.Core.Graphics;
 using PdfTickleSharp.Core.Text;
@@ -91,10 +85,10 @@ public static class Phase2Tests
             // Page 4: Drawing Operations
             var page4 = document.AddPage(PdfPageSize.A4);
             Console.WriteLine("✏️ 4. Testing Basic Drawing Operations...");
-            // Lines
-            page4.DrawLine(100, 750, 300, 750, Color.Black, 2);
-            page4.DrawLine(100, 720, 100, 620, Color.Red, 3);
-            page4.DrawLine(100, 620, 300, 720, Color.Blue, 1);
+            // Lines - positioned more carefully within page bounds
+            page4.DrawLine(100, 700, 300, 700, Color.Black, 3); // Horizontal line - moved down from 750
+            page4.DrawLine(100, 650, 100, 550, Color.Red, 3);   // Vertical line - adjusted range
+            page4.DrawLine(150, 500, 350, 600, Color.Blue, 2);  // Diagonal line - repositioned
             // Rectangles
             page4.DrawRectangle(350, 750, 100, 50, Color.Green, 2, true);
             page4.DrawRectangle(500, 750, 100, 50, Color.Black, 1, false);
