@@ -8,8 +8,8 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\PdfTickleSharp.Advanced\PdfTickleSharp.Advanced.csproj" />
       <ProjectReference Include="..\PdfTickleSharp.Core\PdfTickleSharp.Core.csproj" />
+      <ProjectReference Include="..\PdfTickleSharp.Data\PdfTickleSharp.Data.csproj" />
     </ItemGroup>
 
 </Project>

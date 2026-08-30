@@ -8,554 +8,907 @@ using PdfTickleSharp.Core.Document;
 using PdfTickleSharp.Core.Graphics;
 using PdfTickleSharp.Core.Text;
 
-namespace PdfTickleSharp.Core.IO
+namespace PdfTickleSharp.Core.IO;
+
+/// <summary>
+/// Writes PDF documents to files or streams in PDF 1.7 format.
+/// Fonts are embedded as subsetted Identity-H CID fonts so any Unicode text the
+/// bundled fonts cover renders and remains searchable, and images are converted
+/// into the sample formats PDF understands.
+/// </summary>
+public class PdfWriter
 {
     /// <summary>
-    /// Writes PDF documents to files or streams in basic PDF format.
+    /// Gets or sets whether content, font and image streams are Flate compressed.
+    /// Turn this off to produce a readable PDF when debugging output.
     /// </summary>
-    public class PdfWriter
+    public bool CompressStreams { get; set; } = true;
+
+    private readonly List<PdfObject> _objects = new();
+    private readonly Dictionary<LoadedFont, FontUsage> _fonts = new();
+    private readonly List<EmbeddedImage> _images = new();
+    private readonly Dictionary<byte[], int> _imageLookup = new(ByteArrayComparer.Instance);
+
+    /// <summary>
+    /// Writes the PDF document to the specified file path.
+    /// </summary>
+    /// <param name="document">The document to write.</param>
+    /// <param name="filePath">The destination file path.</param>
+    public void WriteToFile(PdfDocument document, string filePath)
     {
-        private readonly List<PdfObject> _objects = new();
-        private int _nextObjectNumber = 1;
-        private readonly Dictionary<byte[], int> _imageXObjects = new();
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(filePath);
 
-        /// <summary>
-        /// Writes the PDF document to the specified file path.
-        /// </summary>
-        public void WriteToFile(PdfDocument document, string filePath)
+        File.WriteAllBytes(filePath, GeneratePdf(document));
+    }
+
+    /// <summary>
+    /// Writes the PDF document to the specified stream.
+    /// </summary>
+    /// <param name="document">The document to write.</param>
+    /// <param name="stream">The destination stream.</param>
+    public void WriteToStream(PdfDocument document, Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(stream);
+
+        var pdf = GeneratePdf(document);
+        stream.Write(pdf, 0, pdf.Length);
+    }
+
+    /// <summary>
+    /// Generates the complete PDF file as a byte array.
+    /// </summary>
+    /// <param name="document">The document to render.</param>
+    /// <returns>The PDF file contents.</returns>
+    public byte[] GeneratePdf(PdfDocument document)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+
+        // A PDF must contain at least one page; failing here is clearer than
+        // writing a file that every viewer rejects.
+        if (document.PageCount == 0)
+            throw new InvalidOperationException(
+                "Cannot generate a PDF from a document with no pages. Add a page with AddPage() first.");
+
+        FontManager.Initialize();
+        Reset();
+
+        // Work out which fonts, glyphs and images the document needs before
+        // emitting anything, so every resource exists by the time pages use it.
+        AnalyzeDocument(document);
+
+        var catalog = AllocateObject();
+        var pagesRoot = AllocateObject();
+
+        WriteFontObjects();
+        WriteImageObjects();
+
+        var pageObjects = WritePageObjects(document, pagesRoot.Number);
+        var info = WriteInfoObject(document.Metadata);
+
+        catalog.Dictionary =
+            "<< /Type /Catalog " +
+            $"/Pages {pagesRoot.Number} 0 R " +
+            "/ViewerPreferences << /FitWindow true /CenterWindow true >> >>";
+
+        var kids = string.Join(" ", pageObjects.Select(page => $"{page.Number} 0 R"));
+        pagesRoot.Dictionary = $"<< /Type /Pages /Kids [{kids}] /Count {pageObjects.Count} >>";
+
+        return Serialize(catalog, info, document);
+    }
+
+    private void Reset()
+    {
+        _objects.Clear();
+        _fonts.Clear();
+        _images.Clear();
+        _imageLookup.Clear();
+    }
+
+    // --- Analysis --------------------------------------------------------
+
+    /// <summary>
+    /// Walks every page to record which glyphs each font must embed and to decode
+    /// each distinct image exactly once.
+    /// </summary>
+    private void AnalyzeDocument(PdfDocument document)
+    {
+        foreach (var page in document.Pages)
         {
-            File.WriteAllBytes(filePath, GeneratePdf(document));
+            foreach (var content in page.GetContents())
+            {
+                switch (content)
+                {
+                    case TextContent text:
+                        RegisterText(text.Text, text.Format);
+                        break;
+
+                    case TextFlowContent flow:
+                        RegisterText(flow.Text, flow.Format);
+                        break;
+
+                    case ImageContent image:
+                        RegisterImage(image.ImageData);
+                        break;
+                }
+            }
+        }
+    }
+
+    private void RegisterText(string text, TextFormat format)
+    {
+        foreach (var run in FontManager.SplitIntoRuns(text, format))
+        {
+            if (!_fonts.TryGetValue(run.Font, out var usage))
+            {
+                usage = new FontUsage(run.Font, _fonts.Count);
+                _fonts[run.Font] = usage;
+            }
+            usage.Record(run.Text);
+        }
+    }
+
+    private void RegisterImage(byte[] imageData)
+    {
+        if (imageData.Length == 0 || _imageLookup.ContainsKey(imageData)) return;
+
+        _imageLookup[imageData] = _images.Count;
+        _images.Add(new EmbeddedImage(_images.Count, ImageDecoder.Decode(imageData)));
+    }
+
+    // --- Font objects ----------------------------------------------------
+
+    /// <summary>
+    /// Emits, for every font in use, the five objects a subsetted CID font needs:
+    /// the font program, its descriptor, the CID font, a ToUnicode map and the
+    /// Type0 font that page resources refer to.
+    /// </summary>
+    private void WriteFontObjects()
+    {
+        foreach (var usage in _fonts.Values.OrderBy(f => f.ResourceIndex))
+        {
+            var font = usage.Font.Font;
+            var glyphs = usage.Glyphs.OrderBy(g => g).ToList();
+
+            var subset = font.CreateSubset(glyphs);
+            var subsetName = $"{TrueTypeFont.CreateSubsetTag(glyphs)}+{font.PostScriptName}";
+
+            var fontFile = AddStreamObject($"/Length1 {subset.Length}", subset);
+
+            var descriptor = AllocateObject();
+            descriptor.Dictionary =
+                "<< /Type /FontDescriptor " +
+                $"/FontName /{subsetName} " +
+                $"/Flags {GetFontFlags(font)} " +
+                $"/FontBBox [{string.Join(" ", font.FontBBox.Select(font.ToPdfUnits))}] " +
+                $"/ItalicAngle {Number(font.ItalicAngle)} " +
+                $"/Ascent {font.ToPdfUnits(font.Ascender)} " +
+                $"/Descent {font.ToPdfUnits(font.Descender)} " +
+                $"/CapHeight {font.ToPdfUnits(font.CapHeight)} " +
+                $"/StemV {(font.IsBold ? 160 : 80)} " +
+                $"/FontFile2 {fontFile.Number} 0 R >>";
+
+            var cidFont = AllocateObject();
+            cidFont.Dictionary =
+                "<< /Type /Font /Subtype /CIDFontType2 " +
+                $"/BaseFont /{subsetName} " +
+                "/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> " +
+                $"/FontDescriptor {descriptor.Number} 0 R " +
+                "/DW 1000 " +
+                $"/W {BuildWidthArray(font, glyphs)} " +
+                "/CIDToGIDMap /Identity >>";
+
+            var toUnicode = AddStreamObject(string.Empty, BuildToUnicodeCMap(usage));
+
+            var type0 = AllocateObject();
+            type0.Dictionary =
+                "<< /Type /Font /Subtype /Type0 " +
+                $"/BaseFont /{subsetName} " +
+                "/Encoding /Identity-H " +
+                $"/DescendantFonts [{cidFont.Number} 0 R] " +
+                $"/ToUnicode {toUnicode.Number} 0 R >>";
+
+            usage.ObjectNumber = type0.Number;
+        }
+    }
+
+    private static int GetFontFlags(TrueTypeFont font)
+    {
+        var flags = 4; // Symbolic: the font supplies its own encoding via Identity-H
+        if (font.IsFixedPitch) flags |= 1;
+        if (font.ItalicAngle != 0) flags |= 64;
+        return flags;
+    }
+
+    /// <summary>
+    /// Builds the CID font W array, grouping runs of consecutive glyph indices
+    /// so the array stays compact.
+    /// </summary>
+    private static string BuildWidthArray(TrueTypeFont font, List<ushort> glyphs)
+    {
+        var array = new StringBuilder("[");
+
+        for (var i = 0; i < glyphs.Count;)
+        {
+            var start = i;
+            while (i + 1 < glyphs.Count && glyphs[i + 1] == glyphs[i] + 1) i++;
+
+            var widths = Enumerable.Range(start, i - start + 1)
+                .Select(index => font.GetAdvanceWidth(glyphs[index]).ToString(CultureInfo.InvariantCulture));
+
+            array.Append($" {glyphs[start]} [{string.Join(" ", widths)}]");
+            i++;
         }
 
-        /// <summary>
-        /// Writes the PDF document to the specified stream.
-        /// </summary>
-        public void WriteToStream(PdfDocument document, Stream stream)
+        array.Append(" ]");
+        return array.ToString();
+    }
+
+    /// <summary>
+    /// Builds a ToUnicode CMap so that text drawn as glyph indices can still be
+    /// selected, copied and searched in a PDF viewer.
+    /// </summary>
+    private static byte[] BuildToUnicodeCMap(FontUsage usage)
+    {
+        var entries = usage.GlyphToText.OrderBy(pair => pair.Key).ToList();
+
+        var cmap = new StringBuilder();
+        cmap.AppendLine("/CIDInit /ProcSet findresource begin");
+        cmap.AppendLine("12 dict begin");
+        cmap.AppendLine("begincmap");
+        cmap.AppendLine("/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def");
+        cmap.AppendLine("/CMapName /Adobe-Identity-UCS def");
+        cmap.AppendLine("/CMapType 2 def");
+        cmap.AppendLine("1 begincodespacerange");
+        cmap.AppendLine("<0000> <FFFF>");
+        cmap.AppendLine("endcodespacerange");
+
+        // A bfchar section may hold at most 100 mappings.
+        foreach (var chunk in entries.Chunk(100))
         {
-            stream.Write(GeneratePdf(document));
+            cmap.AppendLine($"{chunk.Length} beginbfchar");
+            foreach (var (glyph, text) in chunk)
+            {
+                var utf16 = string.Concat(
+                    Encoding.BigEndianUnicode.GetBytes(text).Select(b => b.ToString("X2")));
+                cmap.AppendLine($"<{glyph:X4}> <{utf16}>");
+            }
+            cmap.AppendLine("endbfchar");
         }
 
-        /// <summary>
-        /// Generates the PDF file content as a byte array.
-        /// </summary>
-        public byte[] GeneratePdf(PdfDocument document)
+        cmap.AppendLine("endcmap");
+        cmap.AppendLine("CMapName currentdict /CMap defineresource pop");
+        cmap.AppendLine("end");
+        cmap.AppendLine("end");
+
+        return Encoding.ASCII.GetBytes(cmap.ToString());
+    }
+
+    // --- Image objects ---------------------------------------------------
+
+    /// <summary>
+    /// Emits an image XObject per decoded image, plus a soft mask object when the
+    /// image carries an alpha channel.
+    /// </summary>
+    private void WriteImageObjects()
+    {
+        foreach (var image in _images)
         {
-            _objects.Clear();
-            _nextObjectNumber = 1;
+            var decoded = image.Image;
+            var softMaskReference = string.Empty;
 
-            // Build structure
-            var catalog = CreateCatalog();
-            var pagesRoot = CreatePagesRoot(document);
-            var pageObjects = CreatePageObjects(document);
-            pagesRoot.Content = pagesRoot.Content
-                .Replace("PAGES_PLACEHOLDER", string.Join(" ", pageObjects.Select(p => $"{p.Number} 0 R")))
-                .Replace("COUNT_PLACEHOLDER", document.PageCount.ToString());
-
-            using var ms = new MemoryStream();
-            using var writer = new StreamWriter(ms, Encoding.ASCII, bufferSize: 1024, leaveOpen: true)
+            if (decoded.SoftMask != null)
             {
-                AutoFlush = true
-            };
+                var mask = AddStreamObject(
+                    "/Type /XObject /Subtype /Image " +
+                    $"/Width {decoded.Width} /Height {decoded.Height} " +
+                    "/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode",
+                    decoded.SoftMask,
+                    alreadyCompressed: true);
 
-            // PDF header
-            writer.WriteLine("%PDF-1.4");
-            writer.WriteLine("%âäÜÒ"); // binary comment for compatibility
-
-            // Write objects
-            var offsets = new List<long>();
-            foreach (var obj in _objects)
-            {
-                offsets.Add(ms.Position);
-                writer.WriteLine($"{obj.Number} 0 obj");
-                writer.WriteLine(obj.Content);
-                writer.WriteLine("endobj");
-                writer.WriteLine();
+                softMaskReference = $" /SMask {mask.Number} 0 R";
             }
 
-            // Cross-reference
-            var xrefStart = ms.Position;
-            writer.WriteLine("xref");
-            writer.WriteLine($"0 {_objects.Count + 1}");
-            writer.WriteLine("0000000000 65535 f ");
-            foreach (var off in offsets)
-                writer.WriteLine($"{off:D10} 00000 n ");
+            var xObject = AddStreamObject(
+                "/Type /XObject /Subtype /Image " +
+                $"/Width {decoded.Width} /Height {decoded.Height} " +
+                $"/ColorSpace {decoded.ColorSpace} " +
+                $"/BitsPerComponent {decoded.BitsPerComponent} " +
+                $"/Filter {decoded.Filter}" +
+                softMaskReference,
+                decoded.Data,
+                alreadyCompressed: true);
 
-            // Trailer
-            writer.WriteLine("trailer");
-            writer.WriteLine("<<");
-            writer.WriteLine($"/Size {_objects.Count + 1}");
-            writer.WriteLine($"/Root {catalog.Number} 0 R");
-            writer.WriteLine(">>");
-            writer.WriteLine("startxref");
-            writer.WriteLine(xrefStart.ToString());
-            writer.WriteLine("%%EOF");
+            image.ObjectNumber = xObject.Number;
+        }
+    }
 
-            writer.Flush();
-            return ms.ToArray();
+    // --- Page objects ----------------------------------------------------
+
+    private List<PdfObject> WritePageObjects(PdfDocument document, int parentNumber)
+    {
+        var pages = new List<PdfObject>();
+
+        foreach (var page in document.Pages)
+        {
+            var contentStream = AddStreamObject(string.Empty, BuildContentStream(page));
+
+            var pageObject = AllocateObject();
+            pageObject.Dictionary =
+                "<< /Type /Page " +
+                $"/Parent {parentNumber} 0 R " +
+                $"/MediaBox [0 0 {Number(page.PageSize.Width)} {Number(page.PageSize.Height)}] " +
+                $"/Contents {contentStream.Number} 0 R " +
+                $"/Resources {BuildResourceDictionary(page)} >>";
+
+            pages.Add(pageObject);
         }
 
-        private PdfObject CreateCatalog()
+        return pages;
+    }
+
+    /// <summary>
+    /// Builds a page's resource dictionary, listing only the fonts and images that
+    /// page actually draws.
+    /// </summary>
+    private string BuildResourceDictionary(PdfPage page)
+    {
+        var contents = page.GetContents().ToList();
+
+        var usedFonts = new SortedDictionary<int, FontUsage>();
+        foreach (var content in contents)
         {
-            var obj = new PdfObject(_nextObjectNumber++)
+            var (text, format) = content switch
             {
-                Content = @"<<
-/Type /Catalog
-/Pages 2 0 R
->>"
+                TextContent t => (t.Text, t.Format),
+                TextFlowContent f => (f.Text, f.Format),
+                _ => (null, null)
             };
-            _objects.Add(obj);
-            return obj;
-        }
+            if (text == null || format == null) continue;
 
-        private PdfObject CreatePagesRoot(PdfDocument document)
-        {
-            var obj = new PdfObject(_nextObjectNumber++)
+            foreach (var run in FontManager.SplitIntoRuns(text, format))
             {
-                Content = @"<<
-/Type /Pages
-/Kids [PAGES_PLACEHOLDER]
-/Count COUNT_PLACEHOLDER
->>"
-            };
-            _objects.Add(obj);
-            return obj;
-        }
-
-        private List<PdfObject> CreatePageObjects(PdfDocument document)
-        {
-            var list = new List<PdfObject>();
-            foreach (var page in document.Pages)
-            {
-                var contentStream = CreateContentStream(page);
-                var imageResources = GetImageResourcesForPage(page);
-                
-                var obj = new PdfObject(_nextObjectNumber++)
-                {
-                    Content = $@"<<
-/Type /Page
-/Parent 2 0 R
-/MediaBox [0 0 {page.PageSize.Width.ToString("F2", CultureInfo.InvariantCulture)} {page.PageSize.Height.ToString("F2", CultureInfo.InvariantCulture)}]
-/Contents {contentStream.Number} 0 R
-/Resources <<
-  /Font <<
-    {string.Join("\n    ", GetFontResources())}
-  >>
-  /ColorSpace <<
-    /DeviceRGB << /Type /ColorSpace /Subtype /DeviceRGB >>
-  >>
-{(imageResources.Any() ? $"  /XObject <<\n    {string.Join("\n    ", imageResources)}\n  >>" : "")}
->>"
-                };
-                _objects.Add(obj);
-                list.Add(obj);
+                var usage = _fonts[run.Font];
+                usedFonts[usage.ResourceIndex] = usage;
             }
-            return list;
         }
 
-        private PdfObject CreateContentStream(PdfPage page)
-        {
-            var sb = new StringBuilder();
+        var usedImages = contents.OfType<ImageContent>()
+            .Where(image => _imageLookup.ContainsKey(image.ImageData))
+            .Select(image => _images[_imageLookup[image.ImageData]])
+            .DistinctBy(image => image.ResourceIndex)
+            .OrderBy(image => image.ResourceIndex)
+            .ToList();
 
-            // Text content
-            foreach (var t in GetTextContent(page))
+        var resources = new StringBuilder("<< /ProcSet [/PDF /Text /ImageB /ImageC]");
+
+        if (usedFonts.Count > 0)
+        {
+            var fonts = usedFonts.Values.Select(f => $"/F{f.ResourceIndex} {f.ObjectNumber} 0 R");
+            resources.Append($" /Font << {string.Join(" ", fonts)} >>");
+        }
+
+        if (usedImages.Count > 0)
+        {
+            var images = usedImages.Select(i => $"/Im{i.ResourceIndex} {i.ObjectNumber} 0 R");
+            resources.Append($" /XObject << {string.Join(" ", images)} >>");
+        }
+
+        resources.Append(" >>");
+        return resources.ToString();
+    }
+
+    /// <summary>
+    /// Renders a page's contents to a PDF content stream. Elements are drawn in the
+    /// order they were added, so later elements paint over earlier ones.
+    /// </summary>
+    private byte[] BuildContentStream(PdfPage page)
+    {
+        var content = new StringBuilder();
+
+        foreach (var element in page.GetContents())
+        {
+            switch (element)
             {
-                var adjustedX = AdjustXForAlignment(t.X, t.Text, t.Format, page.PageSize.Width);
-                sb.AppendLine("BT");
-                sb.AppendLine($"/{GetFontName(t.Format)} {t.Format.FontSize.ToString(CultureInfo.InvariantCulture)} Tf");
-                sb.AppendLine($"{FormatColor(t.Format.Color)} rg");
-                sb.AppendLine("0 Tr");
-                sb.AppendLine($"{FormatCoordinate(adjustedX, t.Y, page.PageSize.Height)} Td");
-                var escapedText = EscapePdfString(t.Text);
-                if (escapedText.StartsWith("<") && escapedText.EndsWith(">"))
+                case TextContent text:
+                    AppendTextLine(content, text.Text, text.X, text.Y, text.Format);
+                    break;
+
+                case TextFlowContent flow:
+                    AppendTextFlow(content, flow);
+                    break;
+
+                case LineContent line:
+                    AppendLine(content, line);
+                    break;
+
+                case RectangleContent rectangle:
+                    AppendRectangle(content, rectangle);
+                    break;
+
+                case CircleContent circle:
+                    AppendCircle(content, circle);
+                    break;
+
+                case ImageContent image:
+                    AppendImage(content, image);
+                    break;
+            }
+        }
+
+        return Encoding.ASCII.GetBytes(content.ToString());
+    }
+
+    /// <summary>
+    /// Draws a single line of text. The line may be split across several fonts;
+    /// consecutive show operators continue from the current text position, so no
+    /// repositioning is needed between runs.
+    /// </summary>
+    private void AppendTextLine(StringBuilder content, string text, double x, double y, TextFormat format)
+    {
+        var runs = FontManager.SplitIntoRuns(text, format);
+        if (runs.Count == 0) return;
+
+        var width = runs.Sum(run => run.Measure(format.FontSize));
+        var startX = format.Alignment switch
+        {
+            TextAlignment.Center => x - width / 2,
+            TextAlignment.Right => x - width,
+            _ => x
+        };
+
+        content.AppendLine("BT");
+        content.AppendLine($"{FormatColor(format.Color)} rg");
+        content.AppendLine($"{Number(startX)} {Number(y)} Td");
+
+        foreach (var run in runs)
+        {
+            var usage = _fonts[run.Font];
+            var glyphs = string.Concat(run.Font.GetGlyphs(run.Text).Select(g => g.ToString("X4")));
+
+            content.AppendLine($"/F{usage.ResourceIndex} {Number(format.FontSize)} Tf");
+            content.AppendLine($"<{glyphs}> Tj");
+        }
+
+        content.AppendLine("ET");
+    }
+
+    private void AppendTextFlow(StringBuilder content, TextFlowContent flow)
+    {
+        var lineHeight = GetLineHeight(flow.Format);
+        var y = flow.Y;
+
+        foreach (var line in WrapText(flow.Text, flow.Width, flow.Format))
+        {
+            // Alignment inside a flow is measured against the wrap width.
+            var x = flow.Format.Alignment switch
+            {
+                TextAlignment.Center => flow.X + flow.Width / 2,
+                TextAlignment.Right => flow.X + flow.Width,
+                _ => flow.X
+            };
+
+            AppendTextLine(content, line, x, y, flow.Format);
+            y -= lineHeight;
+        }
+    }
+
+    private static void AppendLine(StringBuilder content, LineContent line)
+    {
+        content.AppendLine("q");
+        content.AppendLine($"{FormatColor(line.Color)} RG");
+        content.AppendLine($"{Number(line.Width)} w");
+        content.AppendLine("1 J"); // round caps read better on thick strokes
+        content.AppendLine($"{Number(line.X1)} {Number(line.Y1)} m");
+        content.AppendLine($"{Number(line.X2)} {Number(line.Y2)} l");
+        content.AppendLine("S");
+        content.AppendLine("Q");
+    }
+
+    private static void AppendRectangle(StringBuilder content, RectangleContent rectangle)
+    {
+        content.AppendLine("q");
+        content.AppendLine(rectangle.Filled
+            ? $"{FormatColor(rectangle.Color)} rg"
+            : $"{FormatColor(rectangle.Color)} RG");
+        content.AppendLine($"{Number(rectangle.LineWidth)} w");
+        content.AppendLine(
+            $"{Number(rectangle.X)} {Number(rectangle.Y)} " +
+            $"{Number(rectangle.Width)} {Number(rectangle.Height)} re");
+        content.AppendLine(rectangle.Filled ? "f" : "S");
+        content.AppendLine("Q");
+    }
+
+    private static void AppendCircle(StringBuilder content, CircleContent circle)
+    {
+        content.AppendLine("q");
+        content.AppendLine(circle.Filled
+            ? $"{FormatColor(circle.Color)} rg"
+            : $"{FormatColor(circle.Color)} RG");
+        content.AppendLine($"{Number(circle.LineWidth)} w");
+        AppendCirclePath(content, circle.CenterX, circle.CenterY, circle.Radius);
+        content.AppendLine(circle.Filled ? "f" : "S");
+        content.AppendLine("Q");
+    }
+
+    /// <summary>
+    /// Approximates a circle with four cubic Bezier arcs.
+    /// </summary>
+    private static void AppendCirclePath(StringBuilder content, double cx, double cy, double r)
+    {
+        // Control-point distance that makes a cubic Bezier match a quarter circle.
+        const double k = 0.5522847498;
+        var offset = k * r;
+
+        content.AppendLine($"{Number(cx)} {Number(cy + r)} m");
+        content.AppendLine($"{Number(cx + offset)} {Number(cy + r)} {Number(cx + r)} {Number(cy + offset)} {Number(cx + r)} {Number(cy)} c");
+        content.AppendLine($"{Number(cx + r)} {Number(cy - offset)} {Number(cx + offset)} {Number(cy - r)} {Number(cx)} {Number(cy - r)} c");
+        content.AppendLine($"{Number(cx - offset)} {Number(cy - r)} {Number(cx - r)} {Number(cy - offset)} {Number(cx - r)} {Number(cy)} c");
+        content.AppendLine($"{Number(cx - r)} {Number(cy + offset)} {Number(cx - offset)} {Number(cy + r)} {Number(cx)} {Number(cy + r)} c");
+        content.AppendLine("h");
+    }
+
+    /// <summary>
+    /// Places an image. The transformation matrix scales the unit square the image
+    /// occupies to the requested size and moves it to the requested position.
+    /// </summary>
+    private void AppendImage(StringBuilder content, ImageContent image)
+    {
+        if (!_imageLookup.TryGetValue(image.ImageData, out var index)) return;
+
+        content.AppendLine("q");
+        content.AppendLine(
+            $"{Number(image.Width)} 0 0 {Number(image.Height)} " +
+            $"{Number(image.X)} {Number(image.Y)} cm");
+        content.AppendLine($"/Im{_images[index].ResourceIndex} Do");
+        content.AppendLine("Q");
+    }
+
+    // --- Text layout -----------------------------------------------------
+
+    /// <summary>
+    /// Gets the distance between baselines, derived from the font's own ascent and
+    /// descent so that the spacing suits the typeface rather than assuming the em size.
+    /// </summary>
+    private static double GetLineHeight(TextFormat format)
+    {
+        var font = FontManager.Resolve(format).Font;
+        var naturalHeight = (font.Ascender - font.Descender) / (double)font.UnitsPerEm;
+        return format.FontSize * naturalHeight * format.LineSpacing;
+    }
+
+    /// <summary>
+    /// Breaks text into lines that fit the given width, honouring explicit line
+    /// breaks and splitting any single word too long to fit.
+    /// </summary>
+    private static List<string> WrapText(string text, double maxWidth, TextFormat format)
+    {
+        var lines = new List<string>();
+        if (string.IsNullOrEmpty(text)) return lines;
+
+        foreach (var paragraph in text.Replace("\r\n", "\n").Split('\n'))
+        {
+            if (paragraph.Length == 0)
+            {
+                lines.Add(string.Empty);
+                continue;
+            }
+
+            var current = new StringBuilder();
+
+            foreach (var word in paragraph.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var candidate = current.Length == 0 ? word : $"{current} {word}";
+
+                if (FontManager.MeasureText(candidate, format) <= maxWidth)
                 {
-                    // Hex string - no parentheses needed
-                    sb.AppendLine($"{escapedText} Tj");
+                    current.Clear();
+                    current.Append(candidate);
+                    continue;
+                }
+
+                if (current.Length > 0)
+                {
+                    lines.Add(current.ToString());
+                    current.Clear();
+                }
+
+                // A word that cannot fit on a line of its own is split by character.
+                if (FontManager.MeasureText(word, format) > maxWidth)
+                {
+                    foreach (var piece in BreakLongWord(word, maxWidth, format))
+                    {
+                        if (current.Length > 0) lines.Add(current.ToString());
+                        current.Clear();
+                        current.Append(piece);
+                    }
                 }
                 else
                 {
-                    // Regular string - use parentheses
-                    sb.AppendLine($"({escapedText}) Tj");
-                }
-                sb.AppendLine("ET");
-            }
-
-            // Text flow
-            foreach (var f in GetTextFlowContent(page))
-            {
-                var lines = WrapText(f.Text, f.Width, f.Format);
-                var currentY = f.Y;
-                var lineHeight = f.Format.FontSize * f.Format.LineSpacing;
-                
-                foreach (var line in lines)
-                {
-                    sb.AppendLine("BT");
-                    sb.AppendLine($"/{GetFontName(f.Format)} {f.Format.FontSize.ToString(CultureInfo.InvariantCulture)} Tf");
-                    sb.AppendLine($"{FormatColor(f.Format.Color)} rg");
-                    sb.AppendLine("0 Tr");
-                    sb.AppendLine($"{FormatCoordinate(f.X, currentY, page.PageSize.Height)} Td");
-                    var escapedText = EscapePdfString(line);
-                    if (escapedText.StartsWith("<") && escapedText.EndsWith(">"))
-                    {
-                        // Hex string - no parentheses needed
-                        sb.AppendLine($"{escapedText} Tj");
-                    }
-                    else
-                    {
-                        // Regular string - use parentheses
-                        sb.AppendLine($"({escapedText}) Tj");
-                    }
-                    sb.AppendLine("ET");
-                    
-                    currentY -= lineHeight; // Move to next line
+                    current.Append(word);
                 }
             }
 
-            // Lines
-            foreach (var l in GetLineContent(page))
+            if (current.Length > 0) lines.Add(current.ToString());
+        }
+
+        return lines;
+    }
+
+    private static IEnumerable<string> BreakLongWord(string word, double maxWidth, TextFormat format)
+    {
+        var piece = new StringBuilder();
+
+        foreach (var character in word)
+        {
+            var candidate = piece.ToString() + character;
+
+            if (piece.Length > 0 && FontManager.MeasureText(candidate, format) > maxWidth)
             {
-                sb.AppendLine("/DeviceRGB CS");
-                sb.AppendLine($"{FormatColor(l.Color)} RG");
-                sb.AppendLine($"{l.Width.ToString(CultureInfo.InvariantCulture)} w");
-                sb.AppendLine($"{FormatCoordinate(l.X1, l.Y1, page.PageSize.Height)} m");
-                sb.AppendLine($"{FormatCoordinate(l.X2, l.Y2, page.PageSize.Height)} l");
-                sb.AppendLine("S");
+                yield return piece.ToString();
+                piece.Clear();
+            }
+            piece.Append(character);
+        }
+
+        if (piece.Length > 0) yield return piece.ToString();
+    }
+
+    // --- Document information --------------------------------------------
+
+    private PdfObject WriteInfoObject(PdfMetadata metadata)
+    {
+        var info = new StringBuilder("<<");
+
+        AppendTextEntry(info, "Title", metadata.Title);
+        AppendTextEntry(info, "Author", metadata.Author);
+        AppendTextEntry(info, "Subject", metadata.Subject);
+        AppendTextEntry(info, "Keywords", metadata.Keywords);
+        AppendTextEntry(info, "Creator", metadata.Creator);
+        AppendTextEntry(info, "Producer", metadata.Producer);
+
+        info.Append($" /CreationDate {FormatDate(metadata.CreationDate)}");
+        info.Append($" /ModDate {FormatDate(metadata.ModificationDate)}");
+        info.Append(" >>");
+
+        var obj = AllocateObject();
+        obj.Dictionary = info.ToString();
+        return obj;
+    }
+
+    private static void AppendTextEntry(StringBuilder builder, string key, string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return;
+        builder.Append($" /{key} {FormatTextString(value)}");
+    }
+
+    /// <summary>
+    /// Formats a PDF text string, escaping the literal form for ASCII and falling
+    /// back to a UTF-16 hex string when the value needs characters ASCII lacks.
+    /// </summary>
+    private static string FormatTextString(string value)
+    {
+        if (value.All(c => c >= 32 && c < 127))
+        {
+            var escaped = value
+                .Replace("\\", "\\\\")
+                .Replace("(", "\\(")
+                .Replace(")", "\\)");
+            return $"({escaped})";
+        }
+
+        // The leading byte order mark tells readers the string is UTF-16BE.
+        var bytes = Encoding.BigEndianUnicode.GetBytes("\uFEFF" + value);
+        return $"<{string.Concat(bytes.Select(b => b.ToString("X2")))}>";
+    }
+
+    private static string FormatDate(DateTime value)
+    {
+        var local = value.Kind == DateTimeKind.Utc ? value.ToLocalTime() : value;
+        var offset = TimeZoneInfo.Local.GetUtcOffset(local);
+        var sign = offset < TimeSpan.Zero ? '-' : '+';
+
+        return $"(D:{local:yyyyMMddHHmmss}{sign}{Math.Abs(offset.Hours):D2}'{Math.Abs(offset.Minutes):D2}')";
+    }
+
+    // --- Serialization ---------------------------------------------------
+
+    /// <summary>
+    /// Writes the header, every object, the cross-reference table and the trailer.
+    /// </summary>
+    private byte[] Serialize(PdfObject catalog, PdfObject info, PdfDocument document)
+    {
+        using var buffer = new MemoryStream();
+
+        Write(buffer, "%PDF-1.7\n");
+        // A comment with high bytes marks the file as binary for transfer tools.
+        buffer.Write([0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A]);
+
+        var offsets = new long[_objects.Count];
+
+        foreach (var obj in _objects)
+        {
+            offsets[obj.Number - 1] = buffer.Position;
+
+            Write(buffer, $"{obj.Number} 0 obj\n");
+            Write(buffer, obj.Dictionary + "\n");
+
+            if (obj.Stream != null)
+            {
+                Write(buffer, "stream\n");
+                buffer.Write(obj.Stream, 0, obj.Stream.Length);
+                Write(buffer, "\nendstream\n");
             }
 
-            // Rectangles
-            foreach (var r in GetRectangleContent(page))
-            {
-                if (r.Filled)
-                {
-                    sb.AppendLine("/DeviceRGB cs");
-                    sb.AppendLine($"{FormatColor(r.Color)} rg");
-                }
-                else
-                {
-                    sb.AppendLine("/DeviceRGB CS");
-                    sb.AppendLine($"{FormatColor(r.Color)} RG");
-                }
-                sb.AppendLine($"{r.LineWidth.ToString(CultureInfo.InvariantCulture)} w");
-                sb.AppendLine($"{FormatCoordinate(r.X, r.Y, page.PageSize.Height)} {r.Width.ToString("F2", CultureInfo.InvariantCulture)} {r.Height.ToString("F2", CultureInfo.InvariantCulture)} re");
-                sb.AppendLine(r.Filled ? "f" : "S");
-            }
-
-            // Circles
-            foreach (var c in GetCircleContent(page))
-            {
-                if (c.Filled)
-                {
-                    sb.AppendLine("/DeviceRGB cs");
-                    sb.AppendLine($"{FormatColor(c.Color)} rg");
-                }
-                else
-                {
-                    sb.AppendLine("/DeviceRGB CS");
-                    sb.AppendLine($"{FormatColor(c.Color)} RG");
-                }
-                sb.AppendLine($"{c.LineWidth.ToString(CultureInfo.InvariantCulture)} w");
-                DrawCircle(sb, c.CenterX, c.CenterY, c.Radius, page.PageSize.Height);
-                sb.AppendLine(c.Filled ? "f" : "S");
-            }
-
-            // Images
-            foreach (var i in GetImageContent(page))
-            {
-                var imageId = CreateImageXObject(i.ImageData);
-                sb.AppendLine("q"); // Save graphics state
-                sb.AppendLine($"{i.Width.ToString("F2", CultureInfo.InvariantCulture)} 0 0 {i.Height.ToString("F2", CultureInfo.InvariantCulture)} {FormatCoordinate(i.X, i.Y, page.PageSize.Height)} cm");
-                sb.AppendLine($"/Im{imageId} Do");
-                sb.AppendLine("Q"); // Restore graphics state
-            }
-
-            var contentStr = sb.ToString();
-            var contentBytes = Encoding.ASCII.GetBytes(contentStr);
-            var obj = new PdfObject(_nextObjectNumber++)
-            {
-                Content = $@"<<
-/Length {contentBytes.Length}
->>
-stream
-{contentStr}endstream"};
-            _objects.Add(obj);
-            return obj;
+            Write(buffer, "endobj\n");
         }
 
-        private int CreateImageXObject(byte[] imageData)
+        var xrefOffset = buffer.Position;
+        Write(buffer, $"xref\n0 {_objects.Count + 1}\n");
+        Write(buffer, "0000000000 65535 f \n");
+
+        foreach (var offset in offsets)
         {
-            if (_imageXObjects.TryGetValue(imageData, out int existingId))
-            {
-                return existingId;
-            }
-
-            var objNumber = _nextObjectNumber++;
-
-            var obj = new PdfObject(objNumber)
-            {
-                Content = $@"<<
-/Type /XObject
-/Subtype /Image
-/Width 1
-/Height 1
-/ColorSpace /DeviceRGB
-/BitsPerComponent 8
-/Length {imageData.Length}
->>
-stream
-{Convert.ToBase64String(imageData)}
-endstream"
-            };
-
-            _objects.Add(obj);
-            _imageXObjects[imageData] = objNumber;
-
-            return objNumber;
+            Write(buffer, $"{offset:D10} 00000 n \n");
         }
 
-        private List<string> GetImageResourcesForPage(PdfPage page)
+        var id = CreateDocumentId(document);
+        Write(buffer, "trailer\n<< " +
+                      $"/Size {_objects.Count + 1} " +
+                      $"/Root {catalog.Number} 0 R " +
+                      $"/Info {info.Number} 0 R " +
+                      $"/ID [<{id}> <{id}>] >>\n");
+        Write(buffer, $"startxref\n{xrefOffset}\n%%EOF\n");
+
+        return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// Derives a stable identifier for the document from its metadata and shape.
+    /// </summary>
+    private string CreateDocumentId(PdfDocument document)
+    {
+        var seed = $"{document.Metadata.Title}|{document.Metadata.Author}|" +
+                   $"{document.PageCount}|{_objects.Count}|{document.Metadata.CreationDate.Ticks}";
+
+        var hash = System.Security.Cryptography.MD5.HashData(Encoding.UTF8.GetBytes(seed));
+        return string.Concat(hash.Select(b => b.ToString("X2")));
+    }
+
+    private static void Write(Stream stream, string ascii)
+    {
+        var bytes = Encoding.ASCII.GetBytes(ascii);
+        stream.Write(bytes, 0, bytes.Length);
+    }
+
+    // --- Object helpers --------------------------------------------------
+
+    private PdfObject AllocateObject()
+    {
+        var obj = new PdfObject(_objects.Count + 1);
+        _objects.Add(obj);
+        return obj;
+    }
+
+    /// <summary>
+    /// Adds an object whose body is a stream, compressing it unless the data is
+    /// already in its final encoded form.
+    /// </summary>
+    /// <param name="entries">Extra dictionary entries, without /Length or the braces.</param>
+    /// <param name="data">The stream payload.</param>
+    /// <param name="alreadyCompressed">True when the payload carries its own filter.</param>
+    private PdfObject AddStreamObject(string entries, byte[] data, bool alreadyCompressed = false)
+    {
+        var filter = string.Empty;
+
+        if (!alreadyCompressed && CompressStreams)
         {
-            var xObjects = new List<string>();
-            foreach (var image in GetImageContent(page))
-            {
-                var id = CreateImageXObject(image.ImageData);
-                xObjects.Add($"/Im{id} {id} 0 R");
-            }
-            return xObjects;
+            data = ImageDecoder.Deflate(data);
+            filter = " /Filter /FlateDecode";
         }
 
-        private void DrawCircle(StringBuilder sb, double cx, double cy, double r, double pageHeight)
+        var obj = AllocateObject();
+        obj.Stream = data;
+        obj.Dictionary = $"<<{(entries.Length > 0 ? " " + entries : string.Empty)}{filter} /Length {data.Length} >>";
+        return obj;
+    }
+
+    private static string FormatColor(Color color) =>
+        $"{Number(color.NormalizedR)} {Number(color.NormalizedG)} {Number(color.NormalizedB)}";
+
+    /// <summary>
+    /// Formats a number for PDF output: invariant, never in exponent notation and
+    /// without trailing zeros.
+    /// </summary>
+    private static string Number(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value)) return "0";
+        return Math.Round(value, 4).ToString("0.####", CultureInfo.InvariantCulture);
+    }
+
+    // --- Internal state --------------------------------------------------
+
+    private sealed class PdfObject
+    {
+        public int Number { get; }
+        public string Dictionary { get; set; } = "<< >>";
+        public byte[]? Stream { get; set; }
+
+        public PdfObject(int number) => Number = number;
+    }
+
+    /// <summary>
+    /// Tracks which glyphs of a font a document uses, and what text each glyph
+    /// came from so a ToUnicode map can be produced.
+    /// </summary>
+    private sealed class FontUsage
+    {
+        public LoadedFont Font { get; }
+        public int ResourceIndex { get; }
+        public int ObjectNumber { get; set; }
+        public HashSet<ushort> Glyphs { get; } = new();
+        public Dictionary<ushort, string> GlyphToText { get; } = new();
+
+        public FontUsage(LoadedFont font, int resourceIndex)
         {
-            const double k = 0.5522848;
-            
-            // Use the coordinate system as-is since we're not flipping Y anymore
-            sb.AppendLine($"{cx.ToString("F2", CultureInfo.InvariantCulture)} {(cy + r).ToString("F2", CultureInfo.InvariantCulture)} m");
-            sb.AppendLine($"{(cx + k*r).ToString("F2", CultureInfo.InvariantCulture)} {(cy + r).ToString("F2", CultureInfo.InvariantCulture)} {(cx + r).ToString("F2", CultureInfo.InvariantCulture)} {(cy + k*r).ToString("F2", CultureInfo.InvariantCulture)} {(cx + r).ToString("F2", CultureInfo.InvariantCulture)} {cy.ToString("F2", CultureInfo.InvariantCulture)} c");
-            sb.AppendLine($"{(cx + r).ToString("F2", CultureInfo.InvariantCulture)} {(cy - k*r).ToString("F2", CultureInfo.InvariantCulture)} {(cx + k*r).ToString("F2", CultureInfo.InvariantCulture)} {(cy - r).ToString("F2", CultureInfo.InvariantCulture)} {cx.ToString("F2", CultureInfo.InvariantCulture)} {(cy - r).ToString("F2", CultureInfo.InvariantCulture)} c");
-            sb.AppendLine($"{(cx - k*r).ToString("F2", CultureInfo.InvariantCulture)} {(cy - r).ToString("F2", CultureInfo.InvariantCulture)} {(cx - r).ToString("F2", CultureInfo.InvariantCulture)} {(cy - k*r).ToString("F2", CultureInfo.InvariantCulture)} {(cx - r).ToString("F2", CultureInfo.InvariantCulture)} {cy.ToString("F2", CultureInfo.InvariantCulture)} c");
-            sb.AppendLine($"{(cx - r).ToString("F2", CultureInfo.InvariantCulture)} {(cy + k*r).ToString("F2", CultureInfo.InvariantCulture)} {(cx - k*r).ToString("F2", CultureInfo.InvariantCulture)} {(cy + r).ToString("F2", CultureInfo.InvariantCulture)} {cx.ToString("F2", CultureInfo.InvariantCulture)} {(cy + r).ToString("F2", CultureInfo.InvariantCulture)} c");
-        }
-
-        private IEnumerable<string> GetFontResources()
-            => new[] { "Helvetica", "Helvetica-Bold", "Helvetica-Italic", "Helvetica-BoldItalic",
-                       "Times", "Times-Bold", "Times-Italic", "Times-BoldItalic",
-                       "Courier", "Courier-Bold", "Courier-Italic", "Courier-BoldItalic" }
-                .Select(f => $"/{f} << /Type /Font /Subtype /Type1 /BaseFont /{f} >>");
-
-        private IEnumerable<(double X, double Y, string Text, TextFormat Format)> GetTextContent(PdfPage page)
-            => page.GetContents().OfType<TextContent>()
-                   .Select(tc => (tc.X, tc.Y, tc.Text, tc.Format));
-
-        private IEnumerable<(double X, double Y, string Text, double Width, TextFormat Format)> GetTextFlowContent(PdfPage page)
-            => page.GetContents().OfType<TextFlowContent>()
-                   .Select(tf => (tf.X, tf.Y, tf.Text, tf.Width, tf.Format));
-
-        private IEnumerable<(double X1, double Y1, double X2, double Y2, Color Color, double Width)> GetLineContent(PdfPage page)
-            => page.GetContents().OfType<LineContent>()
-                   .Select(l => (l.X1, l.Y1, l.X2, l.Y2, l.Color, l.Width));
-
-        private IEnumerable<(double X, double Y, double Width, double Height, Color Color, double LineWidth, bool Filled)> GetRectangleContent(PdfPage page)
-            => page.GetContents().OfType<RectangleContent>()
-                   .Select(r => (r.X, r.Y, r.Width, r.Height, r.Color, r.LineWidth, r.Filled));
-
-        private IEnumerable<(double CenterX, double CenterY, double Radius, Color Color, double LineWidth, bool Filled)> GetCircleContent(PdfPage page)
-            => page.GetContents().OfType<CircleContent>()
-                   .Select(c => (c.CenterX, c.CenterY, c.Radius, c.Color, c.LineWidth, c.Filled));
-
-        private IEnumerable<(byte[] ImageData, double X, double Y, double Width, double Height)> GetImageContent(PdfPage page)
-            => page.GetContents().OfType<ImageContent>()
-                   .Select(i => (i.ImageData, i.X, i.Y, i.Width, i.Height));
-
-        private static string GetFontName(TextFormat format)
-        {
-            var suffix = format.IsBold && format.IsItalic ? "-BoldItalic"
-                       : format.IsBold ? "-Bold"
-                       : format.IsItalic ? "-Italic"
-                       : string.Empty;
-            return format.FontFamily + suffix;
-        }
-
-        private static string EscapePdfString(string text)
-        {
-            // Replace characters that standard PDF fonts can't display with readable alternatives
-            var processedText = ProcessUnicodeCharacters(text);
-            
-            // Check if the processed text still contains any non-ASCII characters
-            bool hasUnicode = processedText.Any(c => c >= 128);
-            
-            if (!hasUnicode)
-            {
-                // Pure ASCII - use simple escaping in parentheses
-                var sb = new StringBuilder();
-                foreach (char c in processedText)
-                {
-                    switch (c)
-                    {
-                        case '\\': sb.Append("\\\\"); break;
-                        case '(': sb.Append("\\("); break;
-                        case ')': sb.Append("\\)"); break;
-                        case '\r': sb.Append("\\r"); break;
-                        case '\n': sb.Append("\\n"); break;
-                        case '\t': sb.Append("\\t"); break;
-                        default: sb.Append(c); break;
-                    }
-                }
-                return sb.ToString();
-            }
-            else
-            {
-                // For remaining Unicode characters (mostly Latin-1 supplement), use hex encoding
-                var utf16Bytes = Encoding.BigEndianUnicode.GetBytes(processedText);
-                var hexSb = new StringBuilder();
-                
-                foreach (byte b in utf16Bytes)
-                {
-                    hexSb.Append($"{b:X2}");
-                }
-                
-                return $"<{hexSb}>";
-            }
-        }
-        
-        private static string ProcessUnicodeCharacters(string text)
-        {
-            var sb = new StringBuilder();
-            
-            for (int i = 0; i < text.Length; i++)
-            {
-                char c = text[i];
-                
-                // Handle surrogate pairs (for emojis and other high Unicode characters)
-                if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
-                {
-                    var codePoint = char.ConvertToUtf32(c, text[i + 1]);
-                    sb.Append(GetUnicodeReplacement(codePoint));
-                    i++; // Skip the low surrogate
-                }
-                else if (c > 255) // Characters beyond Latin-1
-                {
-                    sb.Append(GetUnicodeReplacement(c));
-                }
-                else if (c >= 128 && c <= 255) // Latin-1 supplement - keep as is for hex encoding
-                {
-                    sb.Append(c);
-                }
-                else // ASCII characters
-                {
-                    sb.Append(c);
-                }
-            }
-            
-            return sb.ToString();
-        }
-        
-        private static string GetUnicodeReplacement(int codePoint)
-        {
-            // Common emoji replacements
-            return codePoint switch
-            {
-                0x2728 => "[sparkles]",
-                0x1F389 => "[party]",
-                0x1F680 => "[rocket]",
-                0x1F4C4 => "[document]",
-                0x1F31F => "[star]",
-                0x1F3AF => "[target]",
-                0x2603 => "[snowman]",
-                0x2744 => "[snowflake]",
-                0x2122 => "[TM]",
-                0x2021 => "[dagger]",
-                0x2020 => "[cross]",
-                0x1F602 => "[laughing]",
-                0x1F600 => ":)",
-                _ when codePoint >= 0x1F600 && codePoint <= 0x1F64F => "[emoji]", // Emoticons
-                _ when codePoint >= 0x1F300 && codePoint <= 0x1F5FF => "[symbol]", // Misc symbols
-                _ when codePoint >= 0x1F680 && codePoint <= 0x1F6FF => "[transport]", // Transport symbols
-                _ when codePoint >= 0x2600 && codePoint <= 0x26FF => "[misc]", // Miscellaneous symbols
-                _ => $"[U+{codePoint:X4}]"
-            };
-        }
-
-        private static string FormatColor(Color color)
-        {
-            // PDFium compatibility: use decimal format with dot separator
-            return $"{color.NormalizedR.ToString("F1", CultureInfo.InvariantCulture)} {color.NormalizedG.ToString("F1", CultureInfo.InvariantCulture)} {color.NormalizedB.ToString("F1", CultureInfo.InvariantCulture)}";
-        }
-
-        private static string FormatCoordinate(double x, double y, double pageHeight)
-        {
-            // PDFium compatibility: ensure coordinates are properly formatted
-            // The input coordinates are already in the correct PDF coordinate system (Y=0 at bottom)
-            return $"{x.ToString("F2", CultureInfo.InvariantCulture)} {y.ToString("F2", CultureInfo.InvariantCulture)}";
-        }
-        
-        private static double AdjustXForAlignment(double x, string text, TextFormat format, double pageWidth)
-        {
-            if (format.Alignment == TextAlignment.Left)
-                return x;
-                
-            // Estimate text width (rough approximation)
-            var estimatedTextWidth = EstimateTextWidth(text, format);
-            
-            return format.Alignment switch
-            {
-                TextAlignment.Center => x - (estimatedTextWidth / 2),
-                TextAlignment.Right => x - estimatedTextWidth,
-                _ => x
-            };
-        }
-        
-        private static double EstimateTextWidth(string text, TextFormat format)
-        {
-            // Rough approximation: average character width is about 0.6 * font size
-            // This is an approximation and could be improved with proper font metrics
-            return text.Length * format.FontSize * 0.6;
-        }
-        
-        private static List<string> WrapText(string text, double maxWidth, TextFormat format)
-        {
-            var lines = new List<string>();
-            var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            var currentLine = new StringBuilder();
-            
-            foreach (var word in words)
-            {
-                var testLine = currentLine.Length == 0 ? word : currentLine + " " + word;
-                var testWidth = EstimateTextWidth(testLine, format);
-                
-                if (testWidth <= maxWidth)
-                {
-                    if (currentLine.Length > 0)
-                        currentLine.Append(" ");
-                    currentLine.Append(word);
-                }
-                else
-                {
-                    if (currentLine.Length > 0)
-                    {
-                        lines.Add(currentLine.ToString());
-                        currentLine.Clear();
-                    }
-                    currentLine.Append(word);
-                }
-            }
-            
-            if (currentLine.Length > 0)
-                lines.Add(currentLine.ToString());
-                
-            return lines.Count > 0 ? lines : new List<string> { text };
+            Font = font;
+            ResourceIndex = resourceIndex;
         }
 
         /// <summary>
-        /// Represents a PDF object with a number and content.
+        /// Records the glyphs needed to draw the given text, along with the
+        /// characters they came from so a ToUnicode map can be built.
         /// </summary>
-        private class PdfObject
+        public void Record(string text)
         {
-            public int Number { get; }
-            public string Content { get; set; }
-
-            public PdfObject(int number)
+            foreach (var (glyph, source) in Font.GetGlyphMappings(text))
             {
-                Number = number;
-                Content = string.Empty;
+                Glyphs.Add(glyph);
+                GlyphToText.TryAdd(glyph, source);
             }
+        }
+    }
+
+    private sealed class EmbeddedImage
+    {
+        public int ResourceIndex { get; }
+        public DecodedImage Image { get; }
+        public int ObjectNumber { get; set; }
+
+        public EmbeddedImage(int resourceIndex, DecodedImage image)
+        {
+            ResourceIndex = resourceIndex;
+            Image = image;
+        }
+    }
+
+    /// <summary>
+    /// Compares byte arrays by content, so the same image supplied as two separate
+    /// arrays is embedded only once.
+    /// </summary>
+    private sealed class ByteArrayComparer : IEqualityComparer<byte[]>
+    {
+        public static readonly ByteArrayComparer Instance = new();
+
+        public bool Equals(byte[]? x, byte[]? y)
+        {
+            if (ReferenceEquals(x, y)) return true;
+            if (x == null || y == null) return false;
+            return x.AsSpan().SequenceEqual(y);
+        }
+
+        public int GetHashCode(byte[] obj)
+        {
+            // Hash the length plus a sample of the contents; enough to separate
+            // distinct images without walking megabytes of pixel data.
+            var hash = new HashCode();
+            hash.Add(obj.Length);
+
+            var step = Math.Max(1, obj.Length / 64);
+            for (var i = 0; i < obj.Length; i += step) hash.Add(obj[i]);
+
+            return hash.ToHashCode();
         }
     }
 }

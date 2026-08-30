@@ -50,8 +50,8 @@ public class PdfMetadata
     /// </summary>
     public PdfMetadata()
     {
-        Producer = "PdfTickleSharp";
-        Creator = "PdfTickleSharp Library";
+        Producer = $"PdfTickleSharp {PdfTickleSharp.Version}";
+        Creator = $"PdfTickleSharp Library {PdfTickleSharp.Version}";
         CreationDate = DateTime.UtcNow;
         ModificationDate = DateTime.UtcNow;
     }

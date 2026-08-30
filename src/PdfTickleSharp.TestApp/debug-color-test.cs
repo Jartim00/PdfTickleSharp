@@ -7,7 +7,11 @@ namespace PdfTickleSharp.TestApp;
 
 public static class DebugColorTest
 {
-    public static void Run()
+    /// <summary>
+    /// Writes a PDF exercising text colours at a range of page positions.
+    /// </summary>
+    /// <returns>The path of the generated PDF.</returns>
+    public static string Run()
     {
         Console.WriteLine("=== Debug Color Test ===");
         
@@ -38,5 +42,8 @@ public static class DebugColorTest
         
         Console.WriteLine($"Debug PDF created: {outputPath}");
         Console.WriteLine("Open this in Chrome and Firefox to compare color rendering");
+        Console.WriteLine();
+
+        return outputPath;
     }
 } 

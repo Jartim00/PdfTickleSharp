@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>0.2.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Only the fonts FontManager actually resolves to are embedded. Every embedded
+      font is read into memory at startup, so shipping unused faces costs both
+      assembly size and working set.
+
+      Not embedded, on purpose:
+        - The Condensed, ExtraLight and MathTeXGyre DejaVu faces: no family maps
+          to them, so they would be dead weight.
+        - NotoColorEmoji: a COLRv1 font whose artwork is a paint graph of
+          transforms, gradients and compositing, with empty 'glyf' outlines for
+          the emoji code points. Embedding its 23 MB would render nothing.
+          Emoji come from NotoEmoji-Regular, which has real outlines.
+    -->
+    <EmbeddedResource Include="Fonts\DejaVuSans.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSans-Bold.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSans-Oblique.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSans-BoldOblique.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSerif.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSerif-Bold.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSerif-Italic.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSerif-BoldItalic.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSansMono.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSansMono-Bold.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSansMono-Oblique.ttf" />
+    <EmbeddedResource Include="Fonts\DejaVuSansMono-BoldOblique.ttf" />
+    <EmbeddedResource Include="Fonts\NotoEmoji-Regular.ttf" />
+    <EmbeddedResource Include="Resources\**\*" />
+  </ItemGroup>
+
+</Project>
