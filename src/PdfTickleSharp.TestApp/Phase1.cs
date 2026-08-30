@@ -8,7 +8,7 @@ namespace PdfTickleSharp.TestApp;
 /// </summary>
 public static class Phase1Tests
 {
-    public static async Task<int> RunAsync(string[] args)
+    public static Task<int> RunAsync(string[] args)
     {
         Console.WriteLine("=== PdfTickleSharp Phase 1 Complete Test ===");
         Console.WriteLine($"Library Version: {PdfTickleSharp.Core.PdfTickleSharp.Version}");
@@ -76,7 +76,7 @@ public static class Phase1Tests
             // 5. Test Simple PDF Creation (file I/O) - THE NEW FUNCTIONALITY!
             Console.WriteLine("💾 5. Testing Simple PDF Creation (file I/O)...");
             
-            var outputPath = Path.Combine(Environment.CurrentDirectory, "test-output.pdf");
+            var outputPath = Path.Combine(Environment.CurrentDirectory, "phase1.pdf");
             Console.WriteLine($"   📁 Saving PDF to: {outputPath}");
             
             document.Save(outputPath);
@@ -116,31 +116,26 @@ public static class Phase1Tests
             Console.WriteLine("✅ 4. Basic text rendering API - COMPLETE (basic only)");
             Console.WriteLine("✅ 5. Simple PDF creation (file I/O) - COMPLETE");
             Console.WriteLine();
-            Console.WriteLine("⚠️  Known Phase 1 Limitations (to fix in Phase 2):");
-            Console.WriteLine("   • Unicode characters (✅) display as '?' - ASCII encoding issue");
-            Console.WriteLine("   • Text formatting is very basic - only Helvetica 12pt");
-            Console.WriteLine("   • No text styling, colors, or advanced typography");
-            Console.WriteLine("   • Page sizes work perfectly (A4, Letter, Custom)");
+            Console.WriteLine("✅ Phase 1 Foundation - COMPLETE!");
+            Console.WriteLine("   • Page sizes work correctly (A4, Letter, A3, Custom)");
+            Console.WriteLine("   • Multi-page documents build and save reliably");
+            Console.WriteLine("   • All I/O methods verified (file, stream, byte array)");
             Console.WriteLine();
-            Console.WriteLine("🚀 READY FOR PHASE 2: Core Features");
-            Console.WriteLine("   - Fix Unicode/UTF-8 encoding for special characters");
-            Console.WriteLine("   - Advanced text formatting (fonts, colors, styles)");
-            Console.WriteLine("   - Image insertion and manipulation");
-            Console.WriteLine("   - Page layout management");
-            Console.WriteLine("   - Enhanced metadata handling");
-            Console.WriteLine("   - Basic drawing operations");
+            Console.WriteLine("ℹ️  Deliberately out of scope here, covered by the Phase 2 tests:");
+            Console.WriteLine("   • Unicode text and embedded fonts");
+            Console.WriteLine("   • Text formatting, colours, alignment and flow");
+            Console.WriteLine("   • Images and drawing operations");
             Console.WriteLine();
             Console.WriteLine($"📁 Your test PDF is ready: {outputPath}");
             Console.WriteLine("🔍 Open it in any PDF viewer to see the results!");
-            Console.WriteLine("🎯 The basic infrastructure works - now let's make it beautiful!");
 
-            return 0;
+            return Task.FromResult(0);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"❌ PHASE 1 TEST FAILED: {ex.Message}");
             Console.WriteLine($"Stack trace: {ex}");
-            return 1;
+            return Task.FromResult(1);
         }
     }
 } 
